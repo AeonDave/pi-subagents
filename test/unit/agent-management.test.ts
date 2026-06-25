@@ -392,7 +392,7 @@ Drive the failing test first.
 		const result = handleManagementAction("models", {}, ctx);
 		const text = readText(result);
 		assert.equal(result.isError, false);
-		assert.match(text, /^Builtin subagent models/m);
+		assert.match(text, /^Subagent models/m);
 		assert.match(text, /Current session model:\n  openai\/gpt-5-mini/);
 		assert.match(text, /(?:^|\n)scout\n  model:\n    openai\/gpt-5-mini\n  source: inherits current session model(?:\n|$)/);
 	});
@@ -422,7 +422,7 @@ Drive the failing test first.
 		const result = handleManagementAction("models", { agent: "reviewer" }, ctx);
 		const text = readText(result);
 		assert.equal(result.isError, false);
-		assert.match(text, /^Builtin subagent model/m);
+		assert.match(text, /^Subagent model/m);
 		assert.match(text, /Agent: reviewer/);
 		assert.match(text, /Effective model:\n  anthropic\/claude-sonnet-4/);
 		assert.match(text, /Source: project override/);
@@ -431,14 +431,36 @@ Drive the failing test first.
 		assert.match(text.replaceAll("\\", "/"), /Override file:\n  .*\.pi\/settings\.json/);
 	});
 
-	it("rejects unknown builtin filters for runtime model mappings", () => {
-		const result = handleManagementAction("models", { agent: "not-a-builtin" }, {
+	it("rejects unknown agents for runtime model mappings", () => {
+		const result = handleManagementAction("models", { agent: "not-an-agent" }, {
 			cwd: tempDir,
 			modelRegistry: { getAvailable: () => [] },
 		});
 
 		assert.equal(result.isError, true);
-		assert.match(readText(result), /Builtin agent 'not-a-builtin' not found/);
+		assert.match(readText(result), /Agent 'not-an-agent' not found\. Available: /);
+	});
+
+	it("resolves the effective model for a user-defined (non-builtin) agent", () => {
+		const userAgentsDir = path.join(tempDir, "agent-home", "agents");
+		fs.mkdirSync(userAgentsDir, { recursive: true });
+		fs.writeFileSync(
+			path.join(userAgentsDir, "strong-op.md"),
+			["---", "name: strong-op", "description: Strong reasoning operator", "model: anthropic/claude-opus-4-8", "---", "You are strong-op."].join("\n"),
+			"utf-8",
+		);
+
+		const result = handleManagementAction("models", { agent: "strong-op" }, {
+			cwd: tempDir,
+			modelRegistry: { getAvailable: () => [{ provider: "anthropic", id: "claude-opus-4-8" }] },
+		});
+
+		const text = readText(result);
+		assert.equal(result.isError, false);
+		assert.match(text, /^Subagent model/m);
+		assert.match(text, /Agent: strong-op \(user\)/);
+		assert.match(text, /Effective model:\n  anthropic\/claude-opus-4-8/);
+		assert.match(text, /Source: agent config/);
 	});
 
 	it("creates delegate with its builtin prompt defaults", () => {

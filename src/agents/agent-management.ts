@@ -8,7 +8,6 @@ import {
 	type AgentSource,
 	type ChainConfig,
 	type ChainStepConfig,
-	BUILTIN_AGENT_NAMES,
 	defaultInheritProjectContext,
 	defaultInheritSkills,
 	defaultSystemPromptMode,
@@ -567,32 +566,33 @@ function formatModelSource(agent: AgentConfig, currentModel: ParentModel | undef
 	if (agent.override && agent.model !== agent.override.base.model) {
 		return `${agent.override.scope} override`;
 	}
-	if (agent.model) return "builtin agent config";
+	if (agent.model) return "agent config";
 	if (currentModel) return "inherits current session model";
 	return "inherit requested, but no current session model is available";
 }
 
 function handleModels(params: ManagementParams, ctx: ManagementContext): AgentToolResult<Details> {
 	const requestedAgent = params.agent?.trim();
-	if (requestedAgent && !(BUILTIN_AGENT_NAMES as readonly string[]).includes(requestedAgent)) {
-		return result(`Builtin agent '${requestedAgent}' not found. Available: ${BUILTIN_AGENT_NAMES.join(", ")}.`, true);
-	}
-
 	const discovered = discoverAgentsAll(ctx.cwd);
-	const builtinByName = new Map(discovered.builtin.map((agent) => [agent.name, agent]));
+	// Effective config per name across every source. Later sources win
+	// (project > user > package > builtin), matching dispatch precedence, so
+	// `models` resolves user/project agents too — not just builtins.
+	const agentByName = new Map<string, AgentConfig>();
+	for (const agent of allAgents(discovered)) agentByName.set(agent.name, agent);
 	const availableModels = ctx.modelRegistry.getAvailable().map(toModelInfo);
 	const currentModel = ctx.model ? { provider: ctx.model.provider, id: ctx.model.id } : undefined;
 	const preferredProvider = ctx.model?.provider;
-	const names = requestedAgent ? [requestedAgent] : [...BUILTIN_AGENT_NAMES];
 
 	if (requestedAgent) {
-		const agent = builtinByName.get(requestedAgent);
-		if (!agent) return result(`Builtin agent '${requestedAgent}' not found.`, true);
+		const agent = agentByName.get(requestedAgent);
+		if (!agent) {
+			return result(`Agent '${requestedAgent}' not found. Available: ${availableNames(ctx.cwd, "agent").join(", ") || "none"}.`, true);
+		}
 		const resolvedModel = resolveSubagentModelOverride(agent.model, currentModel, availableModels, preferredProvider);
 		const lines = [
-			"Builtin subagent model",
+			"Subagent model",
 			"",
-			`Agent: ${requestedAgent}`,
+			`Agent: ${requestedAgent} (${agent.source})`,
 			"Effective model:",
 			`  ${resolvedModel ?? "(unresolved)"}`,
 			`Source: ${formatModelSource(agent, currentModel)}`,
@@ -612,23 +612,14 @@ function handleModels(params: ManagementParams, ctx: ManagementContext): AgentTo
 	}
 
 	const lines = [
-		"Builtin subagent models",
+		"Subagent models",
 		"",
 		"Current session model:",
 		`  ${currentModel ? `${currentModel.provider}/${currentModel.id}` : "(unavailable)"}`,
 		"",
 	];
 
-	for (const name of names) {
-		const agent = builtinByName.get(name);
-		if (!agent) {
-			lines.push(name);
-			lines.push("  model:");
-			lines.push("    (builtin definition not found)");
-			lines.push("  source: missing");
-			lines.push("");
-			continue;
-		}
+	for (const [name, agent] of agentByName) {
 		const resolvedModel = resolveSubagentModelOverride(agent.model, currentModel, availableModels, preferredProvider);
 		const source = `${formatModelSource(agent, currentModel)}${agent.disabled ? "; disabled" : ""}`;
 		lines.push(name);
