@@ -5,6 +5,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { buildCompletionKey, getGlobalSeenMap, markSeenWithTtl } from "./completion-dedupe.ts";
 import { SUBAGENT_ASYNC_COMPLETE_EVENT } from "../../shared/types.ts";
+import { classifyProviderPolicyBlock } from "../shared/provider-block.ts";
 
 interface ChainStepResult {
 	agent: string;
@@ -84,10 +85,15 @@ export default function registerSubagentNotify(pi: ExtensionAPI): void {
 					: undefined;
 
 		const displaySummary = summary.trim() ? summary : "(no output)";
+		const block = status === "failed"
+			? classifyProviderPolicyBlock([summary, ...(result.results?.map((step) => step.output) ?? [])].join("\n"))
+			: undefined;
 		const content = [
 			`Background task ${status}: **${agent}**${taskInfo}`,
 			"",
 			displaySummary,
+			block ? "" : undefined,
+			block ? `⚠ ${block.hint}.` : undefined,
 			sessionLine ? "" : undefined,
 			sessionLine,
 		]
