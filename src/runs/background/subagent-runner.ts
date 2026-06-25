@@ -5,6 +5,7 @@ import { pathToFileURL } from "node:url";
 import type { Message } from "@earendil-works/pi-ai";
 import { writeAtomicJson } from "../../shared/atomic-json.ts";
 import { consumeInterruptRequest, watchAsyncControlInbox } from "./control-channel.ts";
+import { classifyProviderPolicyBlock } from "../shared/provider-block.ts";
 import { appendJsonl as appendRawJsonl, getArtifactPaths } from "../../shared/artifacts.ts";
 import { PI_CODING_AGENT_PACKAGE, getPiSpawnCommand, resolveInstalledPiPackageRoot } from "../shared/pi-spawn.ts";
 import { captureSingleOutputSnapshot, finalizeSingleOutput, formatSavedOutputReference, resolveSingleOutput, type SingleOutputSnapshot } from "../shared/single-output.ts";
@@ -2337,7 +2338,10 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 	if (statusPayload.state === "failed" && !statusPayload.error) {
 		const failedStep = statusPayload.steps.find((s) => s.status === "failed");
 		if (failedStep?.agent) {
-			statusPayload.error = `Step failed: ${failedStep.agent}`;
+			const block = classifyProviderPolicyBlock(failedStep.error);
+			statusPayload.error = block
+				? `Step failed: ${failedStep.agent} — ${block.hint}.`
+				: `Step failed: ${failedStep.agent}`;
 		}
 	}
 	writeStatusPayload();
