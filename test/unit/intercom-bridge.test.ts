@@ -93,20 +93,86 @@ function withPackagedIntercom<T>(fn: (paths: { agentDir: string; cwd: string; gl
 }
 
 describe("diagnoseIntercomBridge", () => {
-	it("reports inactive and unavailable when pi-intercom is missing", () => {
+	it("reports inactive and unavailable when no intercom provider is installed", () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-intercom-diagnostic-test-"));
 		try {
 			const diagnostic = diagnoseIntercomBridge({
 				config: { mode: "always" },
 				context: "fresh",
 				orchestratorTarget: "main",
+				agentDir: tempDir,
+				cwd: tempDir,
 				extensionDir: path.join(tempDir, "missing-pi-intercom"),
 				configPath: path.join(tempDir, "config.json"),
 			});
 			assert.equal(diagnostic.active, false);
 			assert.equal(diagnostic.wantsIntercom, true);
 			assert.equal(diagnostic.piIntercomAvailable, false);
-			assert.equal(diagnostic.reason, "pi-intercom extension was not found");
+			assert.equal(diagnostic.reason, "no intercom bridge provider (pi-intercom or pi-subagents-comtac) was found");
+		} finally {
+			fs.rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
+
+	it("activates for a local-path pi-subagents-comtac package (dev install)", () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-comtac-local-test-"));
+		try {
+			const agentDir = path.join(tempDir, "agent");
+			const cwd = path.join(tempDir, "workspace");
+			const comtacDir = path.join(tempDir, "pi-subagents-comtac");
+			const configPath = path.join(agentDir, "intercom", "config.json");
+			fs.mkdirSync(comtacDir, { recursive: true });
+			fs.mkdirSync(path.dirname(configPath), { recursive: true });
+			fs.mkdirSync(cwd, { recursive: true });
+			fs.writeFileSync(path.join(agentDir, "settings.json"), JSON.stringify({ packages: [comtacDir] }, null, 2));
+			fs.writeFileSync(path.join(comtacDir, "package.json"), JSON.stringify({ name: "pi-subagents-comtac", pi: { extensions: ["./src/index.ts"] } }, null, 2));
+			fs.writeFileSync(configPath, JSON.stringify({ enabled: true }));
+
+			const diagnostic = diagnoseIntercomBridge({
+				config: { mode: "always" },
+				context: "fresh",
+				orchestratorTarget: "main",
+				agentDir,
+				cwd,
+				extensionDir: path.join(agentDir, "extensions", "pi-intercom"),
+				configPath,
+			});
+			assert.equal(diagnostic.active, true);
+			assert.equal(diagnostic.piIntercomAvailable, true);
+			assert.equal(diagnostic.extensionDir, path.resolve(comtacDir));
+		} finally {
+			fs.rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
+
+	it("activates for a git-installed pi-subagents-comtac package (prod install)", () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-comtac-git-test-"));
+		try {
+			const agentDir = path.join(tempDir, "agent");
+			const cwd = path.join(tempDir, "workspace");
+			const globalNpmRoot = path.join(tempDir, "global-node_modules");
+			const packageDir = path.join(agentDir, "npm", "node_modules", "pi-subagents-comtac");
+			const configPath = path.join(agentDir, "intercom", "config.json");
+			fs.mkdirSync(packageDir, { recursive: true });
+			fs.mkdirSync(globalNpmRoot, { recursive: true });
+			fs.mkdirSync(path.dirname(configPath), { recursive: true });
+			fs.mkdirSync(cwd, { recursive: true });
+			fs.writeFileSync(path.join(agentDir, "settings.json"), JSON.stringify({ packages: ["git:github.com/AeonDave/pi-subagents-comtac"] }, null, 2));
+			fs.writeFileSync(path.join(packageDir, "package.json"), JSON.stringify({ name: "pi-subagents-comtac", pi: { extensions: ["./src/index.ts"] } }, null, 2));
+			fs.writeFileSync(configPath, JSON.stringify({ enabled: true }));
+
+			const diagnostic = diagnoseIntercomBridge({
+				config: { mode: "always" },
+				context: "fresh",
+				orchestratorTarget: "main",
+				agentDir,
+				cwd,
+				globalNpmRoot,
+				extensionDir: path.join(agentDir, "extensions", "pi-intercom"),
+				configPath,
+			});
+			assert.equal(diagnostic.active, true);
+			assert.equal(diagnostic.extensionDir, path.resolve(packageDir));
 		} finally {
 			fs.rmSync(tempDir, { recursive: true, force: true });
 		}

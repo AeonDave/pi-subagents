@@ -7,6 +7,25 @@ import type { ExtensionConfig, IntercomBridgeConfig, IntercomBridgeMode } from "
 import { getAgentDir, getProjectConfigDir } from "../shared/utils.ts";
 
 const PI_INTERCOM_PACKAGE_NAME = "pi-intercom";
+const COMTAC_PACKAGE_NAME = "pi-subagents-comtac";
+
+/**
+ * Package names that provide the intercom-bus contract (the `intercom` +
+ * `contact_supervisor` tools over a session-presence bus). `pi-subagents-comtac`
+ * is a cross-platform drop-in replacement for the legacy `pi-intercom`; either
+ * one activates the bridge. Detection is by provider name across npm:, git:, and
+ * local-path installs — never bound to a single package or install source.
+ */
+const INTERCOM_PROVIDER_PACKAGE_NAMES: readonly string[] = [PI_INTERCOM_PACKAGE_NAME, COMTAC_PACKAGE_NAME];
+
+/** True if a package/extension name (or a path ending in one) is an intercom provider. */
+function isIntercomProviderName(name: string | undefined): boolean {
+	if (!name) return false;
+	const normalized = name.trim().replaceAll("\\", "/").toLowerCase();
+	if (!normalized) return false;
+	const base = normalized.split("/").filter(Boolean).pop() ?? normalized;
+	return INTERCOM_PROVIDER_PACKAGE_NAMES.includes(base) || base.includes("comtac");
+}
 
 function defaultAgentDir(): string {
 	return getAgentDir();
@@ -14,6 +33,11 @@ function defaultAgentDir(): string {
 
 function defaultIntercomExtensionDir(agentDir = defaultAgentDir()): string {
 	return path.join(agentDir, "extensions", PI_INTERCOM_PACKAGE_NAME);
+}
+
+/** Candidate seeded extension dirs for every known intercom provider. */
+function defaultIntercomExtensionDirs(agentDir = defaultAgentDir()): string[] {
+	return INTERCOM_PROVIDER_PACKAGE_NAMES.map((name) => path.join(agentDir, "extensions", name));
 }
 
 export const INTERCOM_EXTENSION_DIR_ENV = "PI_INTERCOM_EXTENSION_DIR";
@@ -199,7 +223,45 @@ function getGlobalNpmRoot(): string | null {
 	}
 }
 
-function configuredPiIntercomPackageDir(input: ResolveIntercomBridgeInput, agentDir: string): string | undefined {
+type ProviderResolveCtx = { configDir: string; agentDir: string; globalNpmRoot: string | null; scope: "project" | "user" };
+
+function nodeModulesProviderCandidates(name: string, ctx: ProviderResolveCtx): string[] {
+	return ctx.scope === "project"
+		? [path.join(ctx.configDir, "npm", "node_modules", name)]
+		: [
+			...(ctx.globalNpmRoot ? [path.join(ctx.globalNpmRoot, name)] : []),
+			path.join(ctx.agentDir, "npm", "node_modules", name),
+		];
+}
+
+function parseGitPackageName(source: string): string | undefined {
+	const spec = source.slice(4).trim().replace(/[#?].*$/, "").replace(/\.git$/i, "");
+	if (!spec) return undefined;
+	const last = spec.split(/[\\/]/).filter(Boolean).pop();
+	return last && isSafePackagePath(last) ? last : undefined;
+}
+
+/**
+ * Resolve a settings `packages` entry source to a provider name plus the install
+ * roots to probe. Handles npm:, git:, and local-path packages, so the bridge
+ * works whether a provider is git-installed (prod), npm-installed, or loaded from
+ * a local checkout (dev) — never tied to one install source.
+ */
+function resolveProviderCandidates(source: string, ctx: ProviderResolveCtx): { name: string | undefined; candidates: string[] } {
+	if (source.startsWith("npm:")) {
+		const name = parseNpmPackageName(source);
+		return { name, candidates: name ? nodeModulesProviderCandidates(name, ctx) : [] };
+	}
+	if (source.startsWith("git:")) {
+		const name = parseGitPackageName(source);
+		return { name, candidates: name ? nodeModulesProviderCandidates(name, ctx) : [] };
+	}
+	// Local-path package: absolute, or relative to the settings dir.
+	const localPath = path.isAbsolute(source) ? source : path.resolve(ctx.configDir, source);
+	return { name: path.basename(localPath), candidates: [path.resolve(localPath)] };
+}
+
+function configuredIntercomProviderDir(input: ResolveIntercomBridgeInput, agentDir: string): string | undefined {
 	const projectConfigDir = input.cwd ? findNearestProjectConfigDir(path.resolve(input.cwd)) : undefined;
 	const settingsFiles = [
 		...(projectConfigDir ? [{ file: path.join(projectConfigDir, "settings.json"), configDir: projectConfigDir, scope: "project" as const }] : []),
@@ -216,15 +278,9 @@ function configuredPiIntercomPackageDir(input: ResolveIntercomBridgeInput, agent
 		for (const entry of packages) {
 			if (!packageEntryAllowsExtensions(entry)) continue;
 			const source = packageEntrySource(entry)?.trim();
-			if (!source?.startsWith("npm:")) continue;
-			const packageName = parseNpmPackageName(source);
-			if (packageName !== PI_INTERCOM_PACKAGE_NAME) continue;
-			const candidates = scope === "project"
-				? [path.join(configDir, "npm", "node_modules", packageName)]
-				: [
-					...(globalNpmRoot ? [path.join(globalNpmRoot, packageName)] : []),
-					path.join(agentDir, "npm", "node_modules", packageName),
-				];
+			if (!source) continue;
+			const { name, candidates } = resolveProviderCandidates(source, { configDir, agentDir, globalNpmRoot, scope });
+			if (!isIntercomProviderName(name)) continue;
 			const packageRoot = candidates.find(packageHasPiExtension);
 			if (packageRoot) return path.resolve(packageRoot);
 		}
@@ -233,9 +289,18 @@ function configuredPiIntercomPackageDir(input: ResolveIntercomBridgeInput, agent
 }
 
 function resolveIntercomExtensionDir(input: ResolveIntercomBridgeInput, agentDir: string): string {
-	const legacyDir = path.resolve(input.extensionDir ?? envIntercomExtensionDir() ?? defaultIntercomExtensionDir(agentDir));
-	if (fs.existsSync(legacyDir)) return legacyDir;
-	return configuredPiIntercomPackageDir(input, agentDir) ?? legacyDir;
+	const override = input.extensionDir ?? envIntercomExtensionDir();
+	if (override) {
+		const resolved = path.resolve(override);
+		if (fs.existsSync(resolved)) return resolved;
+	}
+	for (const dir of defaultIntercomExtensionDirs(agentDir)) {
+		const resolved = path.resolve(dir);
+		if (fs.existsSync(resolved)) return resolved;
+	}
+	const configured = configuredIntercomProviderDir(input, agentDir);
+	if (configured) return configured;
+	return path.resolve(override ?? defaultIntercomExtensionDir(agentDir));
 }
 
 function extensionSandboxAllowsIntercom(extensions: string[] | undefined, extensionDir: string): boolean {
@@ -244,11 +309,9 @@ function extensionSandboxAllowsIntercom(extensions: string[] | undefined, extens
 	const intercomDir = path.resolve(extensionDir).replaceAll("\\", "/").toLowerCase();
 	for (const entry of extensions) {
 		const normalized = entry.trim().replaceAll("\\", "/").toLowerCase();
-		if (normalized === "pi-intercom") return true;
 		if (normalized === intercomDir) return true;
 		if (normalized.startsWith(`${intercomDir}/`)) return true;
-		if (normalized.endsWith("/pi-intercom")) return true;
-		if (normalized.includes("/pi-intercom/")) return true;
+		if (isIntercomProviderName(normalized)) return true;
 	}
 	return false;
 }
@@ -292,7 +355,7 @@ export function diagnoseIntercomBridge(input: ResolveIntercomBridgeInput): Inter
 	if (mode === "off") reason = "bridge mode is off";
 	else if (mode === "fork-only" && input.context !== "fork") reason = "bridge mode is fork-only and context is not fork";
 	else if (!orchestratorTarget) reason = "orchestrator target is not available";
-	else if (!piIntercomAvailable) reason = "pi-intercom extension was not found";
+	else if (!piIntercomAvailable) reason = "no intercom bridge provider (pi-intercom or pi-subagents-comtac) was found";
 	else {
 		configStatus = intercomConfigStatus(configPath);
 		if (!configStatus.enabled) reason = "intercom config is disabled";
