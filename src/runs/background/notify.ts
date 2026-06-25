@@ -5,7 +5,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { buildCompletionKey, getGlobalSeenMap, markSeenWithTtl } from "./completion-dedupe.ts";
 import { SUBAGENT_ASYNC_COMPLETE_EVENT } from "../../shared/types.ts";
-import { classifyProviderPolicyBlock } from "../shared/provider-block.ts";
+import { isProviderPolicyBlock } from "../shared/provider-block.ts";
 
 interface ChainStepResult {
 	agent: string;
@@ -85,15 +85,14 @@ export default function registerSubagentNotify(pi: ExtensionAPI): void {
 					: undefined;
 
 		const displaySummary = summary.trim() ? summary : "(no output)";
-		const block = status === "failed"
-			? classifyProviderPolicyBlock([summary, ...(result.results?.map((step) => step.output) ?? [])].join("\n"))
-			: undefined;
+		const blocked = status === "failed"
+			&& isProviderPolicyBlock([summary, ...(result.results?.map((step) => step.output) ?? [])].join("\n"));
 		const content = [
 			`Background task ${status}: **${agent}**${taskInfo}`,
 			"",
 			displaySummary,
-			block ? "" : undefined,
-			block ? `⚠ ${block.hint}.` : undefined,
+			blocked ? "" : undefined,
+			blocked ? "⚠ Provider usage-policy block (upstream of the harness): switch the child to a different model or reformulate within authorized scope." : undefined,
 			sessionLine ? "" : undefined,
 			sessionLine,
 		]
